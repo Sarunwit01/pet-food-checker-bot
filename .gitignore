@@ -1,0 +1,8 @@
+# Coursework and screenshots
+*.jpg
+*.jpeg
+*.png
+*.txt
+*.md
+!README.md
+project/.env

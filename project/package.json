@@ -1,0 +1,28 @@
+{
+  "name": "pet-food-checker-line-bot",
+  "version": "1.0.0",
+  "description": "LINE Bot for checking dog/cat food safety with Hybrid Gemini AI + Verified Database (MVP IE414)",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test/test-check.js"
+  },
+  "keywords": [
+    "line-bot",
+    "pet-food",
+    "messaging-api",
+    "express",
+    "gemini-ai"
+  ],
+  "author": "IE414 Student",
+  "license": "ISC",
+  "dependencies": {
+    "@line/bot-sdk": "^9.5.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}
