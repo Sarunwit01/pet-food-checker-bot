@@ -139,12 +139,12 @@ async function handleFoodCheck(text, userId) {
     };
   }
 
-  // ขั้นที่ 1: ค้นหาในฐานข้อมูล foods.json ด้วยระบบ Local Matcher ก่อน
+  // ขั้นที่ 1: ค้นหาในฐานข้อมูล foods.json ด้วยระบบ Local Matcher ก่อน (Fast-Path 0ms ไม่เสียโควตา AI)
   let matchedFood = findFood(cleanedFoodName);
   let aiResult = null;
 
-  // ขั้นที่ 2: หากตั้งค่า Google Gemini API ไว้ ให้เรียก AI ช่วยวิเคราะห์แบบ Hybrid
-  if (isGeminiConfigured()) {
+  // ขั้นที่ 2: หากไม่พบในฐานข้อมูล Local และตั้งค่า Google Gemini API ไว้ ให้เรียก AI ช่วยวิเคราะห์แบบ Hybrid
+  if (!matchedFood && isGeminiConfigured()) {
     aiResult = await analyzeFoodWithGemini(text, petType);
 
     if (aiResult) {

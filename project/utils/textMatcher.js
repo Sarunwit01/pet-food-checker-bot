@@ -16,13 +16,29 @@ const STOP_WORDS = [
   'ช่วยดูหน่อย', 'เช็คหน่อย', 'อยากรู้ว่า', 'ถามหน่อย', 'ตรวจ', 'อาหาร', 'กิน', 'ครับ', 'ค่ะ'
 ];
 
+// คำประสมที่เป็นชื่ออาหาร/พืชที่มีคำว่า "หมา" หรือ "แมว" ปนอยู่ (ป้องกันไม่ให้ถูกตัดคำผิด)
+const PROTECTED_COMPOUND_WORDS = [
+  'หมากฝรั่งไร้น้ำตาล',
+  'หมากฝรั่งน้ำตาลเทียม',
+  'หมากฝรั่ง',
+  'หมาล่า',
+  'หมามุ่ย',
+  'หญ้าแมว',
+  'ตำแยแมว',
+  'นมแมว'
+];
+
 /**
  * ตรวจจับประเภทสัตว์เลี้ยงจากข้อความ
  * @param {string} text 
  * @returns {'dog' | 'cat' | null}
  */
 function detectPetType(text) {
-  const lower = text.toLowerCase();
+  let lower = text.toLowerCase();
+  for (const compound of PROTECTED_COMPOUND_WORDS) {
+    lower = lower.split(compound).join(' ');
+  }
+
   const dogPatterns = ['หมา', 'สุนัข', 'น้องหมา', 'ลูกหมา', 'โฮ่ง', 'dog', 'puppy'];
   const catPatterns = ['แมว', 'น้องแมว', 'ลูกแมว', 'เหมียว', 'cat', 'kitten'];
 
@@ -41,11 +57,28 @@ function detectPetType(text) {
  */
 function cleanFoodQuery(text) {
   let cleaned = text.trim();
+
+  // แทนที่คำประสมด้วย Placeholder ชั่วคราวก่อนตัด STOP_WORDS
+  const placeholders = [];
+  for (let i = 0; i < PROTECTED_COMPOUND_WORDS.length; i++) {
+    const word = PROTECTED_COMPOUND_WORDS[i];
+    if (cleaned.includes(word)) {
+      const token = `__PROTECTED_${i}__`;
+      placeholders.push({ token, word });
+      cleaned = cleaned.split(word).join(token);
+    }
+  }
+
   // เรียงลำดับคำที่มีความยาวมากไปน้อยเพื่อไม่ให้ตัดคำสั้นก่อน
   const sortedStopWords = [...STOP_WORDS].sort((a, b) => b.length - a.length);
 
   for (const word of sortedStopWords) {
     cleaned = cleaned.split(word).join(' ');
+  }
+
+  // คืนค่าคำประสมกลับคืนมา
+  for (const { token, word } of placeholders) {
+    cleaned = cleaned.split(token).join(word);
   }
 
   return cleaned.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -72,29 +105,25 @@ function findFood(query) {
     }
   }
 
-  // 2. ค้นหาแบบบางส่วน (Substring Match)
-  // ให้สิทธิ์คำที่มีความยาวอย่างน้อย 3 ตัวอักษรขึ้นไป เพื่อไม่ให้คำสั้นอย่าง 'นม' ไปจับคู่กับ 'ขนม' หรือ 'ชานม'
+  // 2. ค้นหาแบบบางส่วน (Substring Match) โดยเรียงจากคำค้นที่ยาวที่สุดก่อน (เช่น "กระดูกไก่ต้ม" ต้องชนะ "ไก่ต้ม")
+  const candidates = [];
   for (const item of foods) {
-    // ตรวจสอบกับชื่อหลักก่อน
-    const nameLower = item.name.toLowerCase();
-    if (raw.includes(nameLower) || cleaned.includes(nameLower)) {
-      return item;
-    }
-
+    candidates.push({ term: item.name.toLowerCase(), item });
     for (const alias of item.aliases) {
-      const aliasLower = alias.toLowerCase();
-      // คำสั้น 1-2 ตัวอักษร ให้เทียบแบบตรงตัวเท่านั้น
-      if (aliasLower.length <= 2) {
-        if (raw === aliasLower || cleaned === aliasLower) {
-          return item;
-        }
-        continue;
-      }
+      candidates.push({ term: alias.toLowerCase(), item });
+    }
+  }
+  candidates.sort((a, b) => b.term.length - a.term.length);
 
-      // สำหรับคำที่ยาวตั้งแต่ 3 ตัวอักษรขึ้นไป
-      if (raw.includes(aliasLower) || (cleaned.length >= 3 && cleaned.includes(aliasLower))) {
+  for (const { term, item } of candidates) {
+    if (term.length <= 2) {
+      if (raw === term || cleaned === term) {
         return item;
       }
+      continue;
+    }
+    if (raw.includes(term) || (cleaned.length >= 3 && cleaned.includes(term))) {
+      return item;
     }
   }
 

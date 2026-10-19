@@ -277,13 +277,30 @@ function createAiIngredientWarningFlex(aiResult, petType, triggeredAllergies = [
   const foodTitle = aiResult.extractedFoodName || 'เมนูที่ถามมา';
   const hasAllergyWarning = Array.isArray(triggeredAllergies) && triggeredAllergies.length > 0;
 
-  const isDanger = aiResult.estimatedRisk === 'danger' || hasAllergyWarning;
-  const themeColor = isDanger ? '#c82333' : '#e0a800';
-  const badgeBgColor = isDanger ? '#f8d7da' : '#fff3cd';
-  const badgeTextColor = isDanger ? '#721c24' : '#856404';
-  const badgeText = isDanger
-    ? '🚫 เสี่ยงอันตราย! ไม่แนะนำให้กินนะครับ'
-    : '⚠️ ต้องระวัง! มีส่วนผสมที่ไม่เหมาะกับน้อง';
+  const isDanger = aiResult.estimatedRisk === 'danger';
+  const isSafe = aiResult.estimatedRisk === 'safe' && !hasAllergyWarning;
+
+  let themeColor = '#e0a800';
+  let badgeBgColor = '#fff3cd';
+  let badgeTextColor = '#856404';
+  let badgeText = '⚠️ ต้องระวัง! มีส่วนผสมที่ควรจำกัดปริมาณ';
+
+  if (isDanger) {
+    themeColor = '#c82333';
+    badgeBgColor = '#f8d7da';
+    badgeTextColor = '#721c24';
+    badgeText = '🚫 เสี่ยงอันตราย! ไม่แนะนำให้กินนะครับ';
+  } else if (hasAllergyWarning) {
+    themeColor = '#e65100';
+    badgeBgColor = '#fff3cd';
+    badgeTextColor = '#856404';
+    badgeText = '⚠️ ระวัง! มีส่วนผสมที่ตรงกับประวัติแพ้อาหารของน้อง';
+  } else if (isSafe) {
+    themeColor = '#28a745';
+    badgeBgColor = '#d4edda';
+    badgeTextColor = '#155724';
+    badgeText = '✅ กินได้ในปริมาณเหมาะสม (ประเมินโดย AI)';
+  }
 
   const ingredientsList =
     Array.isArray(aiResult.suspectedIngredients) && aiResult.suspectedIngredients.length > 0

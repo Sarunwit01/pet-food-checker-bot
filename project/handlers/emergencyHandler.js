@@ -79,6 +79,7 @@ const EMERGENCY_STOP_WORDS = [
 const EMERGENCY_REGEX_PATTERNS = [
   { regex: /(?:กิน|กลืน|เลีย|เคี้ยว|คาบ).*(?:ไปแล้ว|เข้าไป|ลงไป|หมดเลย|ไปเยอะ)/, label: 'กินเข้าไปแล้ว' },
   { regex: /(?:เผลอ|แอบ).*(?:กิน|กลืน|เลีย)/, label: 'เผลอกิน' },
+  { regex: /(?:กิน|กลืน|เลีย).*(?:เผลอ|แอบ)/, label: 'เผลอกิน' },
   { regex: /(?:^|\s|น้อง|หมา|แมว|อาการ)ซึม/, label: 'ซึม' }
 ];
 
@@ -148,8 +149,8 @@ async function handleEmergencyCheck(text, userId, userPetMemory = null) {
   let matchedFood = findFood(text) || (foodCandidate ? findFood(foodCandidate) : null);
   let aiResult = null;
 
-  // 3. หากเปิดใช้งาน Gemini AI ให้ AI ช่วยดูบริบทหรือส่วนผสมอันตรายเพิ่มเติม
-  if (isGeminiConfigured() && (!matchedFood || foodCandidate)) {
+  // 3. หากไม่พบในฐานข้อมูล Local และเปิดใช้งาน Gemini AI ให้ AI ช่วยดูบริบทหรือส่วนผสมอันตรายเพิ่มเติม
+  if (isGeminiConfigured() && !matchedFood && foodCandidate) {
     aiResult = await analyzeFoodWithGemini(text, petType);
     if (aiResult) {
       if (!petType && (aiResult.detectedPetType === 'dog' || aiResult.detectedPetType === 'cat')) {

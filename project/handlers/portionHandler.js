@@ -240,6 +240,19 @@ function handlePortionCommand(text, userId, userPetMemory = null) {
     session.lifeStage = detectedStage;
   }
 
+  // ตรวจสอบกรณีผู้ใช้พยายามกรอกน้ำหนักแต่ค่าผิดปกติ (เช่น ติดลบ, 0, หรือเกิน 120 กก.)
+  const invalidNumberAttempt =
+    /(?:-\d+|\b0(?:\.0+)?\b|\d+\s*(?:กก\.?|กิโลกรัม|กิโล|โล|kg))/i.test(trimmed) &&
+    detectedWeight === null;
+
+  if ((hasActiveSession || isTriggerWord) && invalidNumberAttempt) {
+    portionSessions.set(userId, session);
+    return {
+      type: 'text',
+      text: '⚠️ น้ำหนักต้องอยู่ระหว่าง 0.1 ถึง 120 กิโลกรัม (กก.) นะครับ รบกวนพิมพ์น้ำหนักของน้องใหม่อีกครั้ง เช่น "4.5" หรือ "10 กก." ครับ ⚖️🐾'
+    };
+  }
+
   // Escape Hatch: หากผู้ใช้เคยค้างอยู่ใน Session แต่จู่ๆ พิมพ์ชื่ออาหารอื่นที่ไม่ใช่ตัวเลข/ช่วงวัย/สัตว์เลี้ยง
   // ให้ล้าง Session เพื่อให้ระบบไปเช็คอาหารตามปกติ ไม่ทำให้ผู้ใช้ติดค้างในลูป
   if (hasActiveSession && !isTriggerWord && !detectedPet && detectedWeight === null && !detectedStage) {
