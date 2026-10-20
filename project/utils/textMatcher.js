@@ -81,18 +81,58 @@ function cleanFoodQuery(text) {
     cleaned = cleaned.split(token).join(word);
   }
 
-  return cleaned.replace(/\s+/g, ' ').trim().toLowerCase();
+  return cleaned.replace(/เเ/g, 'แ').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 /**
- * ค้นหาอาหารจาก foods.json
+ * ปรับรูปคำภาษาไทยเพื่อเปรียบเทียบคำที่สะกดเพี้ยน/วรรณยุกต์ผิด/พิมพ์ซ้ำตัวท้าย
+ * @param {string} str
+ * @returns {string}
+ */
+function normalizeForFuzzy(str) {
+  return str
+    .toLowerCase()
+    .replace(/เเ/g, 'แ')
+    .replace(/[\u0E47-\u0E4C]/g, '') // ตัดไม้ไต่คู้ วรรณยุกต์ และตัวการันต์ออกชั่วคราวเพื่อเทียบโครงคำ
+    .replace(/(.)\1+$/g, '$1') // ตัดตัวอักษรซ้ำท้ายคำ เช่น "องุ่นน" -> "องุน"
+    .trim();
+}
+
+/**
+ * คำนวณระยะห่างการสะกดคำ (Levenshtein Edit Distance)
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * ค้นหาอาหารจาก foods.json (รองรับทั้งตรงตัว, คำย่อย และการพิมพ์ผิด/สะกดเพี้ยน)
  * @param {string} query 
  * @returns {object|null}
  */
 function findFood(query) {
   if (!query || query.length === 0) return null;
 
-  const raw = query.toLowerCase().trim();
+  const raw = query.toLowerCase().replace(/เเ/g, 'แ').trim();
   const cleaned = cleanFoodQuery(query);
 
   // 1. ค้นหาแบบตรงตัวก่อน (Exact match กับ name หรือ alias)
@@ -124,6 +164,39 @@ function findFood(query) {
     }
     if (raw.includes(term) || (cleaned.length >= 3 && cleaned.includes(term))) {
       return item;
+    }
+  }
+
+  // 3. ค้นหาแบบอนุโลมคำพิมพ์ผิด (Fuzzy / Typo Match) สำหรับคำยาวตั้งแต่ 4 ตัวอักษรขึ้นไป
+  const targetQuery = cleaned.length >= 3 ? cleaned : raw;
+  const normQuery = normalizeForFuzzy(targetQuery);
+
+  if (normQuery.length >= 3) {
+    let bestMatch = null;
+    let bestDist = Infinity;
+
+    for (const { term, item } of candidates) {
+      const normTerm = normalizeForFuzzy(term);
+      if (normTerm.length < 3) continue;
+
+      // กรณีตัดวรรณยุกต์/สระซ้ำแล้วตรงกันเป๊ะ (เช่น "ช๊อกโกเเลตต" vs "ช็อกโกแลต")
+      if (normQuery === normTerm || (normTerm.length >= 4 && normQuery.includes(normTerm))) {
+        return item;
+      }
+
+      // คำนวณ Edit Distance สำหรับคำที่พิมพ์ผิด 1-2 ตัวอักษร (เช่น "ชอกโกแลด" vs "ช็อกโกแลต")
+      const maxAllowedDist = normTerm.length >= 6 ? 2 : normTerm.length >= 4 ? 1 : 0;
+      if (maxAllowedDist > 0 && Math.abs(normQuery.length - normTerm.length) <= maxAllowedDist) {
+        const dist = levenshteinDistance(normQuery, normTerm);
+        if (dist <= maxAllowedDist && dist < bestDist) {
+          bestDist = dist;
+          bestMatch = item;
+        }
+      }
+    }
+
+    if (bestMatch) {
+      return bestMatch;
     }
   }
 

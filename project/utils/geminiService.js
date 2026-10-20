@@ -8,7 +8,18 @@
 
 const foods = require('../data/foods.json');
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+// ลำดับโมเดลสำหรับเรียกใช้งานและสลับอัตโนมัติ (Model Fallback Chain)
+// ใช้ gemini-2.5-flash และ gemini-3.5-flash เป็นหลักเพราะเสถียรและเร็ว (~2.5-4.5s)
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+
+function getCandidateModels() {
+  const envModel = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : '';
+  // หาก env ตั้งเป็น gemini-3.5-flash-lite ซึ่งมักเจอ 503 High Demand ให้เริ่มที่ gemini-2.5-flash ก่อนแล้วค่อย fallback
+  if (!envModel || envModel === 'gemini-3.5-flash-lite') {
+    return FALLBACK_MODELS;
+  }
+  return [envModel, ...FALLBACK_MODELS.filter(m => m !== envModel)];
+}
 
 /**
  * ตรวจสอบว่ามีการตั้งค่า GEMINI_API_KEY ที่ใช้งานได้หรือไม่
@@ -25,20 +36,12 @@ function isGeminiConfigured() {
 }
 
 /**
- * สร้างสรุปฐานข้อมูล foods.json เพื่อแนบเป็น Context (RAG Grounding) ให้ Gemini
+ * สร้างสรุปฐานข้อมูล foods.json แบบกระชับเพื่อแนบเป็น Context ให้ Gemini ตอบกลับได้รวดเร็ว
  */
 function buildDatabaseContext() {
-  return foods.map(item => ({
-    id: item.id,
-    name: item.name,
-    aliases: item.aliases,
-    allergens: item.allergens,
-    dog_status: item.dog.status,
-    dog_reason: item.dog.reason,
-    cat_status: item.cat.status,
-    cat_reason: item.cat.reason,
-    source: item.source
-  }));
+  return foods
+    .map(item => `- id: "${item.id}" | ชื่อ: ${item.name} | คำพ้อง: ${item.aliases.slice(0, 5).join(', ')}`)
+    .join('\n');
 }
 
 /**
@@ -53,36 +56,36 @@ async function analyzeFoodWithGemini(userText, rememberedPet = null) {
   }
 
   const apiKey = process.env.GEMINI_API_KEY.trim();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+  const dbContext = buildDatabaseContext();
 
-  const dbContext = JSON.stringify(buildDatabaseContext(), null, 2);
+  const systemInstruction = `คุณคือผู้ช่วยสัตวแพทย์อัจฉริยะของบอท "PawSafe (Pet Food Checker)" ระบบ Hybrid (AI + Database)
+หน้าที่ของคุณคือวิเคราะห์คำถามของผู้ใช้เกี่ยวกับอาหาร ขนม เครื่องดื่ม พืช หรือสิ่งของที่สุนัข (dog) และแมว (cat) อาจกินเข้าไป โดยยึดหลักความปลอดภัยสูงสุด (Safety First):
 
-  const systemInstruction = `คุณคือผู้ช่วยสัตวแพทย์อัจฉริยะของบอท "Pet Food Checker" ระบบ Hybrid (AI + Database)
-หน้าที่ของคุณคือวิเคราะห์คำถามของผู้ใช้เกี่ยวกับอาหารของสุนัข (dog) และแมว (cat) โดยยึดหลักความปลอดภัยสูงสุด (Safety First):
-
-รายการอาหารในฐานข้อมูลที่ได้รับการยืนยันแล้ว (foods.json):
+รายการอาหารในฐานข้อมูลหลัก (foods.json):
 ${dbContext}
 
-กฎการทำงาน 3 ข้อของคุณ:
-1. [Smart NLU & Food Matching]:
-   - หากผู้ใช้ถามถึงอาหารที่ตรงกับรายการในฐานข้อมูลโดยตรง (เช่น "ช็อกโกแลต", "องุ่น", "กระเทียม", "ไก่ต้ม", "ชีส", "แอปเปิ้ล", "เมล็ดแอปเปิ้ล", "ไซลิทอล") ให้ระบุ matchedFoodId เป็น id ของอาหารนั้น
-   - หากผู้ใช้ถามถึงเมนูอาหารที่มีส่วนผสมหลักเป็นสารอันตรายชัดเจนในฐานข้อมูลเดียว เช่น "บราวนี่" หรือ "เค้กช็อกโกแลต" (มีช็อกโกแลตเป็นหลัก) สามารถจับคู่ matchedFoodId = "chocolate" ได้เลย พร้อมอธิบายใน aiExplanation ว่าบราวนี่มีช็อกโกแลตเป็นส่วนผสมหลัก
-   - หากเป็นเมนูผสมอื่นๆ หรืออาหารที่ไม่ได้อยู่ในฐานข้อมูล (เช่น "ชานมไข่มุก", "ส้มตำ", "หมูปิ้ง", "ทุเรียน", "ปลาทูทอด") ให้ตั้งค่า matchedFoodId เป็น null
+กฎการทำงาน 4 ข้อของคุณ:
+1. [แก้คำพิมพ์ผิดอัตโนมัติ (Typo Correction) & จับคู่ฐานข้อมูล]:
+   - หากผู้ใช้พิมพ์ชื่ออาหารผิด สะกดเพี้ยน หรือพิมพ์ตกหล่น (เช่น "ช็อกโกเเลต", "ช๊อกโกแลตต", "ชอกโกแลด", "องุ่นน", "ลูกเกต", "เเครอท", "อะโวคาโด้") ให้ตีความเป็นคำที่ถูกต้องทันที!
+   - หากคำที่แก้แล้วตรงกับรายการในฐานข้อมูลหลัก หรือเป็นเมนูที่มีส่วนผสมหลักตัวนั้นชัดเจน (เช่น "บราวนี่" -> "chocolate") ให้ระบุ matchedFoodId เป็น id นั้นทันที
+   - หากไม่อยู่ในฐานข้อมูลหลัก ให้ตั้งค่า matchedFoodId เป็น null และตั้งค่า isFoodQuery = true เสมอ
 
-2. [RAG Grounded Response]:
-   - สร้างข้อความอธิบายเสริม (aiExplanation) ความยาวสั้นกระชับ 1-2 ประโยค ด้วยน้ำเสียงอบอุ่น เป็นมิตร เข้ากับคำถามของผู้ใช้โดยตรง
-   - ห้ามขัดแย้งกับข้อมูลในฐานข้อมูลเด็ดขาด
+2. [รองรับคำหมวดหมู่กว้างๆ เช่น "ขนม", "ผลไม้", "ผัก", "อาหารคน", "ลูกอม", "เนื้อ"]:
+   - หากผู้ใช้พิมพ์คำกว้างๆ เช่น "ขนม" ห้ามปฏิเสธว่าไม่พบข้อมูลเด็ดขาด! ให้ตั้งค่า isFoodQuery = true, matchedFoodId = null, extractedFoodName = คำที่ถาม (เช่น "ขนม (ทั่วไป)")
+   - ประเมินความเสี่ยงเป็น "caution" และระบุ suspectedIngredients เช่น ["น้ำตาลและเกลือสูง (ขนมคน)", "ช็อกโกแลต / ผงโกโก้", "ไซลิทอล (น้ำตาลเทียม)", "ลูกเกด / ถั่วแมคคาเดเมีย"]
+   - ใน aiExplanation ให้อธิบายอย่างเป็นมิตรว่า: ขนมสำหรับสัตว์เลี้ยงโดยเฉพาะกินได้ แต่ขนมของคนส่วนใหญ่มีน้ำตาล โซเดียม หรือสารพิษที่อันตราย หากอยากเช็คขนมชิ้นไหนเป็นพิเศษให้พิมพ์ชื่อขนมนั้นมาได้เลย
 
-3. [AI Ingredient Warning (สำหรับอาหารที่ matchedFoodId เป็น null)]:
-   - ให้ระบุชื่ออาหารที่สกัดได้ใน extractedFoodName
-   - ประเมินความเสี่ยงเบื้องต้นใน estimatedRisk ("danger" | "caution" | "safe") โดยยึดหลักระมัดระวังไว้ก่อน (หากมีเครื่องปรุง น้ำตาล เกลือ ผงชูรส นม หรือไม่แน่ใจ ให้เลือก "caution" หรือ "danger")
-   - ระบุส่วนผสมที่ต้องระวังใน suspectedIngredients (เช่น ["น้ำตาลสูง", "นมวัว (แลคโตส)", "คาเฟอีนในชา"])
-   - อธิบายเหตุผลเตือนภัยเบื้องต้นใน aiExplanation และย้ำเสมอว่าต้องปรึกษาสัตวแพทย์ก่อนให้กินจริง
+3. [AI Ingredient Warning (สำหรับอาหาร/เมนูทุกชนิดที่ไม่อยู่ในฐานข้อมูล)]:
+   - ให้ตั้งค่า isFoodQuery = true เสมอสำหรับอาหาร ขนม เครื่องดื่ม พืช ยา หรือของกินทุกชนิด
+   - ระบุชื่ออาหารที่ถูกต้องใน extractedFoodName
+   - ประเมินความเสี่ยงใน estimatedRisk ("danger" | "caution" | "safe")
+   - ระบุส่วนผสมที่ต้องระวังหรือข้อควรระวังใน suspectedIngredients
+   - อธิบายเหตุผลสั้นกระชับ เข้าใจง่าย เป็นกันเอง 1-2 ประโยคใน aiExplanation
 
-การระบุชนิดสัตว์ (detectedPetType):
-- หากในข้อความระบุว่า หมา/สุนัข ให้ตอบ "dog"
-- หากในข้อความระบุว่า แมว/เหมียว ให้ตอบ "cat"
-- หากในข้อความไม่ได้ระบุ ให้ใช้ค่าความจำเดิมคือ: ${rememberedPet ? `"${rememberedPet}"` : 'null'}`;
+4. การระบุชนิดสัตว์ (detectedPetType):
+   - หากในข้อความระบุว่า หมา/สุนัข ให้ตอบ "dog"
+   - หากในข้อความระบุว่า แมว/เหมียว ให้ตอบ "cat"
+   - หากในข้อความไม่ได้ระบุ ให้ใช้ค่าความจำเดิมคือ: ${rememberedPet ? `"${rememberedPet}"` : 'null'}`;
 
   const responseSchema = {
     type: 'OBJECT',
@@ -133,51 +136,57 @@ ${dbContext}
     ]
   };
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000); // Timeout 8 วินาทีเพื่อให้ทัน LINE replyToken
+  const modelsToTry = getCandidateModels();
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemInstruction }]
+  for (const modelName of modelsToTry) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000); // Timeout 12 วินาทีต่อโมเดล แล้วสลับตัวถัดไปทันที
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
         },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: userText }]
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: systemInstruction }]
+          },
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: userText }]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: 'application/json',
+            responseSchema
           }
-        ],
-        generationConfig: {
-          temperature: 0.2,
-          responseMimeType: 'application/json',
-          responseSchema
-        }
-      }),
-      signal: controller.signal
-    });
+        }),
+        signal: controller.signal
+      });
 
-    clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(`⚠️ Gemini API returned status ${response.status}:`, errText);
-      return null;
+      if (!response.ok) {
+        const errText = await response.text();
+        console.warn(`⚠️ Gemini model "${modelName}" returned status ${response.status}, trying next fallback...`, errText.slice(0, 120));
+        continue;
+      }
+
+      const data = await response.json();
+      const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawJson) continue;
+
+      return JSON.parse(rawJson);
+    } catch (err) {
+      console.warn(`⚠️ Gemini model "${modelName}" failed (${err.message}), trying next fallback...`);
     }
-
-    const data = await response.json();
-    const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!rawJson) return null;
-
-    return JSON.parse(rawJson);
-  } catch (err) {
-    console.error('⚠️ Gemini API call failed (falling back to local matcher):', err.message);
-    return null;
   }
+
+  return null;
 }
 
 /**
@@ -192,60 +201,63 @@ async function transcribeAudioWithGemini(base64Audio, mimeType = 'audio/mp4') {
   }
 
   const apiKey = process.env.GEMINI_API_KEY.trim();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+  const modelsToTry = getCandidateModels();
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+  for (const modelName of modelsToTry) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: 'ถอดเสียงพูดภาษาไทยจากคลิปเสียงนี้เป็นข้อความตัวอักษรให้ตรงตามที่ได้ยินมากที่สุด (ตอบเฉพาะข้อความที่ถอดเสียงได้เท่านั้น ห้ามใส่เครื่องหมายคำพูดหรือคำอธิบายอื่น หากไม่ได้ยินเสียงพูดเลยให้ตอบคำว่า EMPTY)'
-              },
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Audio
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: 'ถอดเสียงพูดภาษาไทยจากคลิปเสียงนี้เป็นข้อความตัวอักษรให้ตรงตามที่ได้ยินมากที่สุด (ตอบเฉพาะข้อความที่ถอดเสียงได้เท่านั้น ห้ามใส่เครื่องหมายคำพูดหรือคำอธิบายอื่น หากไม่ได้ยินเสียงพูดเลยให้ตอบคำว่า EMPTY)'
+                },
+                {
+                  inlineData: {
+                    mimeType,
+                    data: base64Audio
+                  }
                 }
-              }
-            ]
+              ]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.1
           }
-        ],
-        generationConfig: {
-          temperature: 0.1
-        }
-      }),
-      signal: controller.signal
-    });
+        }),
+        signal: controller.signal
+      });
 
-    clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(`⚠️ Gemini Audio STT returned status ${response.status}:`, errText);
-      return null;
+      if (!response.ok) {
+        console.warn(`⚠️ Gemini Audio STT model "${modelName}" returned status ${response.status}, trying next fallback...`);
+        continue;
+      }
+
+      const data = await response.json();
+      const transcript = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (!transcript || transcript === 'EMPTY') {
+        return null;
+      }
+
+      return transcript;
+    } catch (err) {
+      console.warn(`⚠️ Gemini Audio STT model "${modelName}" failed (${err.message}), trying next fallback...`);
     }
-
-    const data = await response.json();
-    const transcript = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!transcript || transcript === 'EMPTY') {
-      return null;
-    }
-
-    return transcript;
-  } catch (err) {
-    console.error('⚠️ Gemini Audio STT failed:', err.message);
-    return null;
   }
+
+  return null;
 }
 
 module.exports = {
