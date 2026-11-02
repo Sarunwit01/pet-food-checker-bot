@@ -9,16 +9,31 @@
 const { foods } = require('../utils/foodStore');
 
 // ลำดับโมเดลสำหรับเรียกใช้งานและสลับอัตโนมัติ (Model Fallback Chain)
-// ใช้ gemini-2.5-flash และ gemini-3.5-flash เป็นหลักเพราะเสถียรและเร็ว (~2.5-4.5s)
-const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+// เนื่องจาก Free Tier จำกัด 20 requests/วัน/โมเดล การเรียงหลายโมเดลทำให้บอทสลับไปใช้โมเดลที่โควตารายวันยังว่างได้อัตโนมัติ
+const FALLBACK_MODELS = [
+  'gemini-3.6-flash',
+  'gemini-3.7-flash',
+  'gemini-omni-1.1-flash',
+  'gemini-2.5-flash',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite'
+];
+
+// เก็บรายชื่อโมเดลที่โควตารายวันหมดแล้ว (429) เพื่อข้ามทันทีไม่ต้องเสียเวลาเรียกซ้ำในรอบถัดไป (รีเซ็ตทุก 1 ชม.)
+const exhaustedModels = new Map();
+const EXHAUST_TTL_MS = 60 * 60 * 1000;
+
+function markModelExhausted(modelName) {
+  exhaustedModels.set(modelName, Date.now());
+}
 
 function getCandidateModels() {
-  const envModel = process.env.GEMINI_MODEL ? process.env.GEMINI_MODEL.trim() : '';
-  // หาก env ตั้งเป็น gemini-3.5-flash-lite ซึ่งมักเจอ 503 High Demand ให้เริ่มที่ gemini-2.5-flash ก่อนแล้วค่อย fallback
-  if (!envModel || envModel === 'gemini-3.5-flash-lite') {
-    return FALLBACK_MODELS;
+  const now = Date.now();
+  for (const [m, ts] of exhaustedModels.entries()) {
+    if (now - ts > EXHAUST_TTL_MS) exhaustedModels.delete(m);
   }
-  return [envModel, ...FALLBACK_MODELS.filter(m => m !== envModel)];
+  const available = FALLBACK_MODELS.filter(m => !exhaustedModels.has(m));
+  return available.length > 0 ? available : FALLBACK_MODELS;
 }
 
 /**
@@ -172,6 +187,7 @@ ${dbContext}
 
       if (!response.ok) {
         const errText = await response.text();
+        if (response.status === 429) markModelExhausted(modelName);
         console.warn(`⚠️ Gemini model "${modelName}" returned status ${response.status}, trying next fallback...`, errText.slice(0, 120));
         continue;
       }
@@ -263,6 +279,7 @@ async function transcribeAudioWithGemini(base64Audio, mimeType = 'audio/mp4') {
 module.exports = {
   isGeminiConfigured,
   getCandidateModels,
+  markModelExhausted,
   analyzeFoodWithGemini,
   transcribeAudioWithGemini
 };

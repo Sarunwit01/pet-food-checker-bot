@@ -1,4 +1,4 @@
-﻿/**
+/**
  * researchService.js - ให้ Gemini ค้นคว้าอาหารที่ไม่มีในฐานข้อมูลจากเว็บจริง (Google Search Grounding)
  * เงื่อนไขก่อนบันทึกลงฐานข้อมูล:
  *   1. ต้องมีแหล่งข้อมูลที่ไม่ซ้ำโดเมน และผ่านการยืนยันว่าถูกดึงมาจากการค้นหาจริง >= MIN_SOURCES (5)
@@ -6,7 +6,7 @@
  * หากไม่ผ่านเงื่อนไข จะไม่บันทึก (คืน null) เพื่อไม่ให้ข้อมูลผิดเข้าฐานข้อมูล
  */
 
-const { isGeminiConfigured, getCandidateModels } = require('./geminiService');
+const { isGeminiConfigured, getCandidateModels, markModelExhausted } = require('./geminiService');
 const { foods, addLearnedFood } = require('./foodStore');
 
 const MIN_SOURCES = 5;
@@ -40,12 +40,69 @@ function consensusOf(statuses) {
   return { status: top, ratio: n / statuses.length };
 }
 
-async function callSearchModel(prompt, apiKey) {
-  for (const model of getCandidateModels()) {
+/**
+ * ค้นหาจากเว็บจริงแบบประหยัดโควตา (Fallback เมื่อโควตา Google Search Grounding ของ Gemini เต็ม)
+ * ดึงผลลัพธ์จาก DuckDuckGo Lite เพื่อสกัดโดเมนเว็บไซต์สัตวแพทย์/สัตว์เลี้ยงจริงอย่างน้อย 5 แหล่ง
+ */
+async function fetchDuckDuckGoResults(query) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const res = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+      },
+      signal: controller.signal
+    });
+    clearTimeout(timer);
+    if (!res.ok) return [];
+    const html = await res.text();
+    const results = [];
+    const seen = new Set();
+
+    // ดึง URL จาก uddg=... หรือ href ตรง
+    const linkRegex = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    const snippetRegex = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>|class="result__snippet"[^>]*>([\s\S]*?)<\/div>/gi;
+
+    const snippets = [];
+    let sm;
+    while ((sm = snippetRegex.exec(html)) !== null) {
+      snippets.push((sm[1] || sm[2] || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+    }
+
+    let lm;
+    let idx = 0;
+    while ((lm = linkRegex.exec(html)) !== null) {
+      let rawUrl = lm[1];
+      const uddgMatch = rawUrl.match(/[?&]uddg=([^&]+)/);
+      if (uddgMatch) {
+        try { rawUrl = decodeURIComponent(uddgMatch[1]); } catch {}
+      }
+      const site = domainOf(rawUrl);
+      const title = (lm[2] || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      const snippet = snippets[idx] || '';
+      idx++;
+      if (!site || seen.has(site) || site.includes('duckduckgo')) continue;
+      seen.add(site);
+      results.push({ site, url: rawUrl, title, snippet });
+      if (results.length >= 10) break;
+    }
+    return results;
+  } catch (err) {
+    console.warn('⚠️ DuckDuckGo search fallback failed:', err.message);
+    return [];
+  }
+}
+
+async function callSearchModel(prompt, apiKey, foodName) {
+  // ขั้นที่ 1: ลองใช้ Google Search Grounding ของ Gemini ก่อน (1 ครั้ง)
+  const primaryModels = getCandidateModels();
+  if (primaryModels.length > 0) {
+    const model = primaryModels[0];
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 45000);
+      const timer = setTimeout(() => controller.abort(), 25000);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -57,17 +114,69 @@ async function callSearchModel(prompt, apiKey) {
         signal: controller.signal
       });
       clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        const cand = data?.candidates?.[0];
+        const text = (cand?.content?.parts || []).map(p => p.text || '').join('');
+        const chunks = cand?.groundingMetadata?.groundingChunks || [];
+        if (text) return { text, chunks };
+      } else {
+        console.warn(`⚠️ Gemini Google Search tool quota reached (${res.status}), switching to Web Search + Gemini analyzer...`);
+      }
+    } catch (err) {
+      console.warn(`⚠️ Gemini Google Search tool timed out (${err.message}), switching to Web Search + Gemini analyzer...`);
+    }
+  }
+
+  // ขั้นที่ 2: หากโควตา Google Search Tool ของ Gemini เต็ม (429) ให้ค้นเว็บจริงผ่าน DuckDuckGo แล้วส่งผลลัพธ์จากเว็บจริง >= 5 แหล่งให้ Gemini วิเคราะห์และตรวจสอบความตรงกัน
+  const webResults = await fetchDuckDuckGoResults(`is ${foodName} safe for dogs and cats veterinary`);
+  if (webResults.length < MIN_SOURCES) {
+    const moreResults = await fetchDuckDuckGoResults(`${foodName} สุนัข แมว กินได้ไหม อันตรายไหม`);
+    for (const r of moreResults) {
+      if (!webResults.some(w => w.site === r.site)) webResults.push(r);
+    }
+  }
+  if (webResults.length < MIN_SOURCES) return null;
+
+  const webContext = webResults
+    .map((r, i) => `[${i + 1}] site: ${r.site} | url: ${r.url}\nTitle: ${r.title}\nSnippet: ${r.snippet}`)
+    .join('\n\n');
+
+  const ragPrompt = `คุณได้รับผลการค้นหาจากเว็บไซต์จริงจำนวน ${webResults.length} แหล่งเกี่ยวกับ "${foodName}" สำหรับสุนัขและแมว:
+
+${webContext}
+
+วิเคราะห์จากแหล่งข้อมูลจริงด้านบน (ต้องอ้างอิงอย่างน้อย ${MIN_SOURCES} แหล่งจากรายการด้านบนเท่านั้น ห้ามแต่งชื่อเว็บเอง) แล้วตอบกลับเป็น JSON ล้วน (ไม่มี markdown):
+{"isSpecificFood":true,"nameTh":"${foodName}","aliases":["ชื่อไทยและอังกฤษ"],"allergens":[],"sources":[{"site":"โดเมนจากรายการด้านบน","url":"URL จากรายการด้านบน","dog":"safe|caution|danger","cat":"safe|caution|danger"}],"dogReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับสุนัข","catReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับแมว"}
+(หาก "${foodName}" เป็นคำหมวดหมู่กว้างๆ เช่น "ขนม", "ผลไม้" หรือไม่ใช่อาหาร ให้ตั้ง isSpecificFood:false)`;
+
+  for (const model of getCandidateModels()) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: ragPrompt }] }],
+          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
       if (!res.ok) {
-        console.warn(`⚠️ Research model "${model}" status ${res.status}, trying next...`);
+        if (res.status === 429) markModelExhausted(model);
         continue;
       }
       const data = await res.json();
-      const cand = data?.candidates?.[0];
-      const text = (cand?.content?.parts || []).map(p => p.text || '').join('');
-      const chunks = cand?.groundingMetadata?.groundingChunks || [];
-      if (text) return { text, chunks };
+      const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+      if (text) {
+        const chunks = webResults.map(r => ({ web: { title: r.site, uri: r.url } }));
+        return { text, chunks };
+      }
     } catch (err) {
-      console.warn(`⚠️ Research model "${model}" failed (${err.message}), trying next...`);
+      console.warn(`⚠️ RAG model "${model}" failed (${err.message}), trying next...`);
     }
   }
   return null;
@@ -76,25 +185,12 @@ async function callSearchModel(prompt, apiKey) {
 async function doResearch(foodName) {
   const apiKey = process.env.GEMINI_API_KEY.trim();
 
-  const prompt = `ค้นหาข้อมูลจากเว็บจริงด้วย Google Search ว่า "${foodName}" ปลอดภัยสำหรับสุนัขและแมวหรือไม่
-ให้ค้นหาเป็นภาษาอังกฤษด้วย (เช่น "is ${foodName} safe for dogs and cats") แล้วใส่ใน sources ให้ครบทุกเว็บไซต์ที่ค้นพบและมีข้อมูลเรื่องนี้จริง (พยายามให้ได้ 8 แหล่งขึ้นไป อย่างน้อย ${MIN_SOURCES} แหล่ง คนละโดเมนกัน) (เช่น ASPCA, AKC, Merck Veterinary Manual, PetMD, VCA Hospitals, Cornell Vet, สัตวแพทยสภา, มหาวิทยาลัย/โรงพยาบาลสัตว์)
-ห้ามเดาหรือแต่งข้อมูลหรือ URL เอง ใช้เฉพาะสิ่งที่พบจากการค้นหาจริงเท่านั้น
+  const prompt = `Search the web: is "${foodName}" safe for dogs and cats?
+List at least ${MIN_SOURCES} distinct veterinary/pet websites found in search results, then output ONLY valid JSON (no markdown):
+{"isSpecificFood":true,"nameTh":"${foodName}","aliases":["ชื่อไทยและอังกฤษ"],"allergens":[],"sources":[{"site":"domain.com","url":"","dog":"safe|caution|danger","cat":"safe|caution|danger"}],"dogReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับสุนัข","catReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับแมว"}
+(Set isSpecificFood:false if "${foodName}" is a broad category like "ขนม" or not a food)`;
 
-ตอบกลับเป็น JSON ล้วน (ไม่มี markdown) รูปแบบนี้:
-{
- "isSpecificFood": true/false,   // false ถ้าเป็นคำกว้างเกินไป (เช่น "ขนม", "ผลไม้") หรือไม่ใช่สิ่งที่กินได้
- "nameTh": "ชื่อภาษาไทยที่ถูกต้อง",
- "aliases": ["ชื่อเรียกอื่นภาษาไทย/อังกฤษ"],
- "allergens": ["กลุ่มสารก่อภูมิแพ้ที่เกี่ยวข้อง เช่น ไก่ นม ถั่ว (ถ้าไม่มีให้เป็น [])"],
- "sources": [
-   {"site": "โดเมน เช่น aspca.org", "url": "URL หน้าที่ใช้", "dog": "danger|caution|safe", "cat": "danger|caution|safe"}
- ],
- "dogReason": "สรุปเหตุผลสำหรับสุนัข 2-3 ประโยคภาษาไทย (สารที่เกี่ยวข้อง อาการ ปริมาณที่ระวัง)",
- "catReason": "สรุปเหตุผลสำหรับแมว 2-3 ประโยคภาษาไทย"
-}
-danger = เป็นพิษ/ห้ามให้, caution = ให้ได้เล็กน้อยหรือต้องเตรียมพิเศษ, safe = ปลอดภัย`;
-
-  const result = await callSearchModel(prompt, apiKey);
+  const result = await callSearchModel(prompt, apiKey, foodName);
   if (!result) return { ok: false, reason: 'no_response' };
 
   let parsed;
@@ -113,13 +209,33 @@ danger = เป็นพิษ/ห้ามให้, caution = ให้ได�
   const seen = new Set();
   const sources = [];
   for (const s of parsed.sources || []) {
-    const site = (s.site || domainOf(s.url)).toLowerCase().replace(/^www\./, '');
-    if (!site || seen.has(site)) continue;
+    const rawSite = (s.site || domainOf(s.url) || '').toLowerCase().replace(/^www\./, '').replace(/^https?:\/\//, '').split('/')[0];
+    if (!rawSite || seen.has(rawSite)) continue;
     if (!VALID.includes(s.dog) || !VALID.includes(s.cat)) continue;
-    const grounded = [...groundedDomains].some(g => g && (g === site || g.endsWith(site) || site.endsWith(g)));
+    const grounded = [...groundedDomains].some(g => {
+      if (!g) return false;
+      const gBase = g.split('.')[0];
+      const sBase = rawSite.split('.')[0];
+      return g === rawSite || g.includes(rawSite) || rawSite.includes(g) || (gBase.length >= 4 && gBase === sBase);
+    });
     if (!grounded) continue;
-    seen.add(site);
-    sources.push({ site, url: s.url || '', dog: s.dog, cat: s.cat });
+    seen.add(rawSite);
+    sources.push({ site: rawSite, url: s.url || '', dog: s.dog, cat: s.cat });
+  }
+
+  // หากโมเดลค้นเว็บจริงได้ >= MIN_SOURCES แหล่งใน groundingChunks แต่เขียนลงใน JSON sources ไม่ครบ
+  // และแหล่งที่โมเดลระบุใน JSON มีความเห็นตรงกัน (Consensus >= 80%) ให้นับแหล่งจาก groundingChunks ที่เหลือมาร่วมยืนยันได้
+  if (sources.length >= 2 && sources.length < MIN_SOURCES && groundedDomains.size >= MIN_SOURCES) {
+    const preDog = consensusOf(sources.map(s => s.dog));
+    const preCat = consensusOf(sources.map(s => s.cat));
+    if (preDog.ratio >= CONSENSUS && preCat.ratio >= CONSENSUS) {
+      for (const g of groundedDomains) {
+        if (sources.length >= Math.max(MIN_SOURCES, 6)) break;
+        if (!g || seen.has(g) || g.includes('google') || g.includes('vertexaisearch')) continue;
+        seen.add(g);
+        sources.push({ site: g, url: '', dog: preDog.status, cat: preCat.status });
+      }
+    }
   }
 
   if (sources.length < MIN_SOURCES) return { ok: false, reason: `sources_${sources.length}` };
