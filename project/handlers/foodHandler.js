@@ -11,9 +11,10 @@
  * 4. Safe Fallback: หากไม่ได้ใส่คีย์ AI หรือ AI ล่ม ระบบจะทำงานด้วยฐานข้อมูล Local 100% โดยไม่พัง
  */
 
-const foods = require('../data/foods.json');
+const { foods } = require('../utils/foodStore');
 const { detectPetType, cleanFoodQuery, findFood } = require('../utils/textMatcher');
 const { isGeminiConfigured, analyzeFoodWithGemini } = require('../utils/geminiService');
+const { researchAndSaveFood } = require('../utils/researchService');
 const { handleEmergencyCheck } = require('./emergencyHandler');
 const { handleAllergyCommand, checkAllergyConflict } = require('./allergyHandler');
 const { handlePortionCommand } = require('./portionHandler');
@@ -157,6 +158,14 @@ async function handleFoodCheck(text, userId) {
       if (!matchedFood && aiResult.matchedFoodId) {
         matchedFood = foods.find(f => f.id === aiResult.matchedFoodId) || null;
       }
+    }
+  }
+
+  // ขั้นที่ 2.5: ไม่มีในฐานข้อมูล -> ให้ AI ค้นคว้าจากเว็บ (>= 5 แหล่ง ผลต้องตรงกัน) แล้วบันทึกลงฐานข้อมูลพร้อมแหล่งที่มา
+  if (!matchedFood && aiResult && aiResult.isFoodQuery && isGeminiConfigured()) {
+    const researched = await researchAndSaveFood(aiResult.extractedFoodName || cleanedFoodName);
+    if (researched) {
+      matchedFood = researched;
     }
   }
 

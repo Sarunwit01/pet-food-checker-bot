@@ -1,8 +1,8 @@
-/**
+﻿/**
  * textMatcher.js - ฟังก์ชันช่วยค้นหาและตัดคำอาหาร
  */
 
-const foods = require('../data/foods.json');
+const { foods } = require('../utils/foodStore');
 
 // คำที่ไม่จำเป็นหรือคำถามที่ผู้ใช้มักพิมพ์ติดมา
 const STOP_WORDS = [

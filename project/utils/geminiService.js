@@ -6,7 +6,7 @@
  * 3. AI Ingredient Warning: วิเคราะห์ส่วนผสมที่อาจเป็นอันตรายสำหรับเมนูที่ไม่อยู่ในฐานข้อมูลโดยตรง
  */
 
-const foods = require('../data/foods.json');
+const { foods } = require('../utils/foodStore');
 
 // ลำดับโมเดลสำหรับเรียกใช้งานและสลับอัตโนมัติ (Model Fallback Chain)
 // ใช้ gemini-2.5-flash และ gemini-3.5-flash เป็นหลักเพราะเสถียรและเร็ว (~2.5-4.5s)
@@ -262,6 +262,7 @@ async function transcribeAudioWithGemini(base64Audio, mimeType = 'audio/mp4') {
 
 module.exports = {
   isGeminiConfigured,
+  getCandidateModels,
   analyzeFoodWithGemini,
   transcribeAudioWithGemini
 };

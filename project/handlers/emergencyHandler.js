@@ -1,4 +1,4 @@
-/**
+﻿/**
  * emergencyHandler.js - ระบบตรวจจับภาวะฉุกเฉินและอาการวิกฤตของสัตว์เลี้ยง (Phase 2)
  *
  * ทำหน้าที่:
@@ -11,7 +11,7 @@
 const { detectPetType, cleanFoodQuery, findFood } = require('../utils/textMatcher');
 const { isGeminiConfigured, analyzeFoodWithGemini } = require('../utils/geminiService');
 const { createEmergencyFlex } = require('../flex/templates');
-const foods = require('../data/foods.json');
+const { foods } = require('../utils/foodStore');
 
 // รายการคำสำคัญที่บ่งบอกว่าน้องกินเข้าไปแล้ว หรือกำลังมีอาการผิดปกติฉุกเฉิน
 const EMERGENCY_KEYWORDS = [
