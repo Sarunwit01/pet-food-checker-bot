@@ -11,9 +11,9 @@ const { foods } = require('../utils/foodStore');
 // ลำดับโมเดลสำหรับเรียกใช้งานและสลับอัตโนมัติ (Model Fallback Chain)
 // เนื่องจาก Free Tier จำกัด 20 requests/วัน/โมเดล การเรียงหลายโมเดลทำให้บอทสลับไปใช้โมเดลที่โควตารายวันยังว่างได้อัตโนมัติ
 const FALLBACK_MODELS = [
+  'gemini-omni-1.1-flash',
   'gemini-3.6-flash',
   'gemini-3.7-flash',
-  'gemini-omni-1.1-flash',
   'gemini-2.5-flash',
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite'

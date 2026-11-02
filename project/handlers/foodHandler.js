@@ -144,7 +144,21 @@ async function handleFoodCheck(text, userId) {
   let matchedFood = findFood(cleanedFoodName);
   let aiResult = null;
 
-  // ขั้นที่ 2: หากไม่พบในฐานข้อมูล Local และตั้งค่า Google Gemini API ไว้ ให้เรียก AI ช่วยวิเคราะห์แบบ Hybrid
+  // หากยังไม่ทราบชนิดสัตว์ (หมา/แมว) และไม่ใช่การกดปุ่ม Quick Reply ให้ถามชนิดสัตว์ก่อนทันที (0ms ประหยัดโควตา AI 50%!)
+  if (!matchedFood && !petType) {
+    return createAskPetQuickReply(cleanedFoodName);
+  }
+
+  // ขั้นที่ 2: หากไม่พบในฐานข้อมูล Local และตั้งค่า Google Gemini API ไว้
+  // (a) ลองให้ระบบ AI ค้นคว้าจากเว็บ >= 5 แหล่งและบันทึกลงฐานข้อมูลถาวร (Supabase) ก่อน (ใช้ Gemini เพียง 1 Request เดียว!)
+  if (!matchedFood && isGeminiConfigured()) {
+    const researched = await researchAndSaveFood(cleanedFoodName);
+    if (researched) {
+      matchedFood = researched;
+    }
+  }
+
+  // (b) หากไม่ใช่รายการอาหารเฉพาะที่ค้น 5 แหล่งได้ (เช่น คำกว้างๆ "ขนม", "ผลไม้", เมนูผสม "ชานมไข่มุก", หรือประโยคซับซ้อน) ให้ใช้ analyzeFoodWithGemini
   if (!matchedFood && isGeminiConfigured()) {
     aiResult = await analyzeFoodWithGemini(text, petType);
 
@@ -161,9 +175,16 @@ async function handleFoodCheck(text, userId) {
     }
   }
 
-  // ขั้นที่ 2.5: ไม่มีในฐานข้อมูล -> ให้ AI ค้นคว้าจากเว็บ (>= 5 แหล่ง ผลต้องตรงกัน) แล้วบันทึกลงฐานข้อมูลพร้อมแหล่งที่มา
-  if (!matchedFood && aiResult && aiResult.isFoodQuery && isGeminiConfigured()) {
-    const researched = await researchAndSaveFood(aiResult.extractedFoodName || cleanedFoodName);
+  // (c) หาก analyzeFoodWithGemini สกัดชื่ออาหารที่ชัดเจนออกมาได้ต่างจาก cleanedFoodName ให้ลองค้นคว้า 5 แหล่งอีกครั้ง
+  if (
+    !matchedFood &&
+    aiResult &&
+    aiResult.isFoodQuery &&
+    aiResult.extractedFoodName &&
+    aiResult.extractedFoodName !== cleanedFoodName &&
+    isGeminiConfigured()
+  ) {
+    const researched = await researchAndSaveFood(aiResult.extractedFoodName);
     if (researched) {
       matchedFood = researched;
     }

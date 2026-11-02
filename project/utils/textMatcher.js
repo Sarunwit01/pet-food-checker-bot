@@ -1,4 +1,4 @@
-﻿/**
+/**
  * textMatcher.js - ฟังก์ชันช่วยค้นหาและตัดคำอาหาร
  */
 
@@ -16,7 +16,15 @@ const STOP_WORDS = [
   'ช่วยดูหน่อย', 'เช็คหน่อย', 'อยากรู้ว่า', 'ถามหน่อย', 'ตรวจ', 'อาหาร', 'กิน', 'ครับ', 'ค่ะ'
 ];
 
-// คำประสมที่เป็นชื่ออาหาร/พืชที่มีคำว่า "หมา" หรือ "แมว" ปนอยู่ (ป้องกันไม่ให้ถูกตัดคำผิด)
+// คำอาหารเฉพาะที่มีชื่อคล้ายหรือมีคำย่อยของอาหารในฐานข้อมูล แต่เป็นคนละชนิดกัน (ไม่ให้จับคู่ผิดด้วย Substring)
+const SUBSTRING_CONFLICTS = [
+  { conflictWord: 'มะม่วงหิมพานต์', blockedId: 'mango' },
+  { conflictWord: 'เม็ดมะม่วง', blockedId: 'mango' },
+  { conflictWord: 'ชมพู่มะเหมี่ยว', blockedId: 'mango' },
+  { conflictWord: 'มะขามเทศ', blockedId: 'tamarind' },
+  { conflictWord: 'สับปะรดสี', blockedId: 'pineapple' },
+  { conflictWord: 'กระเทียมโทน', blockedId: 'onion_garlic' }
+];
 const PROTECTED_COMPOUND_WORDS = [
   'หมากฝรั่งไร้น้ำตาล',
   'หมากฝรั่งน้ำตาลเทียม',
@@ -156,6 +164,9 @@ function findFood(query) {
   candidates.sort((a, b) => b.term.length - a.term.length);
 
   for (const { term, item } of candidates) {
+    if (SUBSTRING_CONFLICTS.some(c => c.blockedId === item.id && raw.includes(c.conflictWord))) {
+      continue;
+    }
     if (term.length <= 2) {
       if (raw === term || cleaned === term) {
         return item;
@@ -176,6 +187,9 @@ function findFood(query) {
     let bestDist = Infinity;
 
     for (const { term, item } of candidates) {
+      if (SUBSTRING_CONFLICTS.some(c => c.blockedId === item.id && raw.includes(c.conflictWord))) {
+        continue;
+      }
       const normTerm = normalizeForFuzzy(term);
       if (normTerm.length < 3) continue;
 

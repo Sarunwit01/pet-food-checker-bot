@@ -32,6 +32,12 @@ function domainOf(url) {
   }
 }
 
+// คำหมวดหมู่กว้างๆ ที่ไม่ใช่อาหารชนิดเดียว (ไม่ค้น 5 แหล่ง แต่ส่งให้ AI Ingredient Warning ตอบภาพรวม)
+const BROAD_CATEGORY_TERMS = new Set([
+  'ขนม', 'ขนม (ทั่วไป)', 'ผลไม้', 'ผลไม้ (ทั่วไป)', 'ผัก', 'ผัก (ทั่วไป)',
+  'เนื้อ', 'เนื้อสัตว์', 'อาหารคน', 'ลูกอม', 'น้ำหวาน', 'ของทอด', 'ของหวาน'
+]);
+
 /** หาสถานะที่เสียงข้างมากและเช็คว่าตรงกันถึงเกณฑ์หรือไม่ */
 function consensusOf(statuses) {
   const count = {};
@@ -94,10 +100,13 @@ async function fetchDuckDuckGoResults(query) {
   }
 }
 
+// จำสถานะโควตาของ Gemini Google Search Tool เพื่อไม่ยิงซ้ำเมื่อเต็มโควตารายวัน
+let googleSearchToolExhaustedAt = 0;
+
 async function callSearchModel(prompt, apiKey, foodName) {
-  // ขั้นที่ 1: ลองใช้ Google Search Grounding ของ Gemini ก่อน (1 ครั้ง)
+  // ขั้นที่ 1: ลองใช้ Google Search Grounding ของ Gemini ก่อน (หากยังไม่เต็มโควตา)
   const primaryModels = getCandidateModels();
-  if (primaryModels.length > 0) {
+  if (primaryModels.length > 0 && Date.now() - googleSearchToolExhaustedAt > FAIL_TTL_MS) {
     const model = primaryModels[0];
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     try {
@@ -121,6 +130,7 @@ async function callSearchModel(prompt, apiKey, foodName) {
         const chunks = cand?.groundingMetadata?.groundingChunks || [];
         if (text) return { text, chunks };
       } else {
+        if (res.status === 429) googleSearchToolExhaustedAt = Date.now();
         console.warn(`⚠️ Gemini Google Search tool quota reached (${res.status}), switching to Web Search + Gemini analyzer...`);
       }
     } catch (err) {
@@ -276,6 +286,7 @@ List at least ${MIN_SOURCES} distinct veterinary/pet websites found in search re
 async function researchAndSaveFood(foodName) {
   if (!isGeminiConfigured() || !foodName) return null;
   const key = foodName.trim().toLowerCase();
+  if (BROAD_CATEGORY_TERMS.has(key)) return null;
 
   const failedAt = failedCache.get(key);
   if (failedAt && Date.now() - failedAt < FAIL_TTL_MS) return null;
