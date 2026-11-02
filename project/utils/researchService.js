@@ -157,7 +157,7 @@ async function callSearchModel(prompt, apiKey, foodName) {
 ${webContext}
 
 วิเคราะห์จากแหล่งข้อมูลจริงด้านบน (ต้องอ้างอิงอย่างน้อย ${MIN_SOURCES} แหล่งจากรายการด้านบนเท่านั้น ห้ามแต่งชื่อเว็บเอง) แล้วตอบกลับเป็น JSON ล้วน (ไม่มี markdown):
-{"isSpecificFood":true,"nameTh":"${foodName}","aliases":["ชื่อไทยและอังกฤษ"],"allergens":[],"sources":[{"site":"โดเมนจากรายการด้านบน","url":"URL จากรายการด้านบน","dog":"safe|caution|danger","cat":"safe|caution|danger"}],"dogReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับสุนัข","catReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับแมว"}
+{"isSpecificFood":true,"nameTh":"ชื่อภาษาไทยที่สะกดถูกต้องตามพจนานุกรม (หากคำค้น '${foodName}' สะกดผิดให้แก้เป็นคำที่ถูกต้อง)","aliases":["ชื่อเรียกอื่นทั้งไทยและอังกฤษ"],"allergens":[],"sources":[{"site":"โดเมนจากรายการด้านบน","url":"URL จากรายการด้านบน","dog":"safe|caution|danger","cat":"safe|caution|danger"}],"dogReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับสุนัข","catReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับแมว"}
 (หาก "${foodName}" เป็นคำหมวดหมู่กว้างๆ เช่น "ขนม", "ผลไม้" หรือไม่ใช่อาหาร ให้ตั้ง isSpecificFood:false)`;
 
   for (const model of getCandidateModels()) {
@@ -197,7 +197,7 @@ async function doResearch(foodName) {
 
   const prompt = `Search the web: is "${foodName}" safe for dogs and cats?
 List at least ${MIN_SOURCES} distinct veterinary/pet websites found in search results, then output ONLY valid JSON (no markdown):
-{"isSpecificFood":true,"nameTh":"${foodName}","aliases":["ชื่อไทยและอังกฤษ"],"allergens":[],"sources":[{"site":"domain.com","url":"","dog":"safe|caution|danger","cat":"safe|caution|danger"}],"dogReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับสุนัข","catReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับแมว"}
+{"isSpecificFood":true,"nameTh":"ชื่อภาษาไทยที่สะกดถูกต้องตามพจนานุกรม","aliases":["ชื่อไทยและอังกฤษ"],"allergens":[],"sources":[{"site":"domain.com","url":"","dog":"safe|caution|danger","cat":"safe|caution|danger"}],"dogReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับสุนัข","catReason":"สรุปเหตุผลภาษาไทย 2 ประโยคสำหรับแมว"}
 (Set isSpecificFood:false if "${foodName}" is a broad category like "ขนม" or not a food)`;
 
   const result = await callSearchModel(prompt, apiKey, foodName);

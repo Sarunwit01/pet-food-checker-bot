@@ -3,6 +3,7 @@
  */
 
 const { foods } = require('../utils/foodStore');
+const { normalizeThaiTypos, toThaiPhonetic } = require('./thaiTypoNormalizer');
 
 // คำที่ไม่จำเป็นหรือคำถามที่ผู้ใช้มักพิมพ์ติดมา
 const STOP_WORDS = [
@@ -42,7 +43,7 @@ const PROTECTED_COMPOUND_WORDS = [
  * @returns {'dog' | 'cat' | null}
  */
 function detectPetType(text) {
-  let lower = text.toLowerCase();
+  let lower = normalizeThaiTypos(text).toLowerCase();
   for (const compound of PROTECTED_COMPOUND_WORDS) {
     lower = lower.split(compound).join(' ');
   }
@@ -64,7 +65,7 @@ function detectPetType(text) {
  * @returns {string}
  */
 function cleanFoodQuery(text) {
-  let cleaned = text.trim();
+  let cleaned = normalizeThaiTypos(text).trim();
 
   // แทนที่คำประสมด้วย Placeholder ชั่วคราวก่อนตัด STOP_WORDS
   const placeholders = [];
@@ -98,11 +99,10 @@ function cleanFoodQuery(text) {
  * @returns {string}
  */
 function normalizeForFuzzy(str) {
-  return str
+  return normalizeThaiTypos(str)
     .toLowerCase()
-    .replace(/เเ/g, 'แ')
     .replace(/[\u0E47-\u0E4C]/g, '') // ตัดไม้ไต่คู้ วรรณยุกต์ และตัวการันต์ออกชั่วคราวเพื่อเทียบโครงคำ
-    .replace(/(.)\1+$/g, '$1') // ตัดตัวอักษรซ้ำท้ายคำ เช่น "องุ่นน" -> "องุน"
+    .replace(/(.)\1+/g, '$1') // ตัดตัวอักษรซ้ำติดกัน เช่น "องุ่นน" -> "องุน", "ช็อกกกโกแลต" -> "ชอกโกแลต"
     .trim();
 }
 
@@ -140,7 +140,7 @@ function levenshteinDistance(a, b) {
 function findFood(query) {
   if (!query || query.length === 0) return null;
 
-  const raw = query.toLowerCase().replace(/เเ/g, 'แ').trim();
+  const raw = normalizeThaiTypos(query).toLowerCase().trim();
   const cleaned = cleanFoodQuery(query);
 
   // 1. ค้นหาแบบตรงตัวก่อน (Exact match กับ name หรือ alias)
@@ -178,9 +178,10 @@ function findFood(query) {
     }
   }
 
-  // 3. ค้นหาแบบอนุโลมคำพิมพ์ผิด (Fuzzy / Typo Match) สำหรับคำยาวตั้งแต่ 4 ตัวอักษรขึ้นไป
+  // 3. ค้นหาแบบอนุโลมคำพิมพ์ผิด (Fuzzy & Thai Phonetic Match)
   const targetQuery = cleaned.length >= 3 ? cleaned : raw;
   const normQuery = normalizeForFuzzy(targetQuery);
+  const phonQuery = toThaiPhonetic(targetQuery);
 
   if (normQuery.length >= 3) {
     let bestMatch = null;
@@ -193,14 +194,21 @@ function findFood(query) {
       const normTerm = normalizeForFuzzy(term);
       if (normTerm.length < 3) continue;
 
-      // กรณีตัดวรรณยุกต์/สระซ้ำแล้วตรงกันเป๊ะ (เช่น "ช๊อกโกเเลตต" vs "ช็อกโกแลต")
+      // 3a. กรณีตัดวรรณยุกต์/สระซ้ำแล้วตรงกันเป๊ะ (เช่น "ช๊อกโกเเลตต" vs "ช็อกโกแลต")
       if (normQuery === normTerm || (normTerm.length >= 4 && normQuery.includes(normTerm))) {
         return item;
       }
 
-      // คำนวณ Edit Distance สำหรับคำที่พิมพ์ผิด 1-2 ตัวอักษร (เช่น "ชอกโกแลด" vs "ช็อกโกแลต")
+      // 3b. กรณีเสียงพ้อง (Thai Phonetic Key) ตรงกันเป๊ะสำหรับคำ 2 พยางค์ขึ้นไป (เช่น "ชอกโกแลด" == "ช็อกโกแลต", "บร็อคโคลี่" == "บรอกโคลี", "ลูกเกต" == "ลูกเกด")
+      const phonTerm = toThaiPhonetic(term);
+      if (phonTerm.length >= 4 && (phonQuery === phonTerm || (phonTerm.length >= 5 && phonQuery.includes(phonTerm)))) {
+        return item;
+      }
+
+      // 3c. คำนวณ Edit Distance บนรูปคำที่ตัดวรรณยุกต์แล้ว (ต้องขึ้นต้นด้วยเสียงพยัญชนะกลุ่มเดียวกัน เพื่อไม่ให้คำคนละชนิดอย่าง "อัลมอนด์" ไปชนกับ "แซลมอน")
       const maxAllowedDist = normTerm.length >= 6 ? 2 : normTerm.length >= 4 ? 1 : 0;
-      if (maxAllowedDist > 0 && Math.abs(normQuery.length - normTerm.length) <= maxAllowedDist) {
+      const sameInitialGroup = phonQuery.length > 0 && phonTerm.length > 0 && phonQuery[0] === phonTerm[0];
+      if (sameInitialGroup && maxAllowedDist > 0 && Math.abs(normQuery.length - normTerm.length) <= maxAllowedDist) {
         const dist = levenshteinDistance(normQuery, normTerm);
         if (dist <= maxAllowedDist && dist < bestDist) {
           bestDist = dist;

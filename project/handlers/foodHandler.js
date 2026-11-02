@@ -13,6 +13,7 @@
 
 const { foods } = require('../utils/foodStore');
 const { detectPetType, cleanFoodQuery, findFood } = require('../utils/textMatcher');
+const { normalizeThaiTypos } = require('../utils/thaiTypoNormalizer');
 const { isGeminiConfigured, analyzeFoodWithGemini } = require('../utils/geminiService');
 const { researchAndSaveFood } = require('../utils/researchService');
 const { handleEmergencyCheck } = require('./emergencyHandler');
@@ -37,7 +38,7 @@ const userPetMemory = new Map();
 function checkCasualChat(text) {
   const lower = text.trim().toLowerCase();
 
-  const greetings = ['สวัสดี', 'หวัดดี', 'ดีครับ', 'ดีค่ะ', 'ฮัลโหล', 'hello', 'hi', 'ทักทาย'];
+  const greetings = ['สวัสดี', 'หวัดดี', 'ดีครับ', 'ดีค่ะ', 'สวัสดีครับ', 'สวัสดีค่ะ', 'หวัดดีครับ', 'หวัดดีค่ะ', 'ฮัลโหล', 'hello', 'hi', 'ทักทาย'];
   if (greetings.some(g => lower === g || lower.startsWith(g + ' '))) {
     return pickNaturalText([
       'สวัสดีครับ! 🐾 วันนี้อยากเช็คอาหารหรือขนมชิ้นไหนให้น้องหมาหรือน้องแมว พิมพ์ชื่อบอกผมได้เลยนะ 😊',
@@ -72,7 +73,10 @@ function checkCasualChat(text) {
  * @param {string} userId - LINE User ID
  * @returns {Promise<object>} LINE Message object สำหรับใช้ตอบกลับ
  */
-async function handleFoodCheck(text, userId) {
+async function handleFoodCheck(rawText, userId) {
+  // ปรับแก้คำพิมพ์ผิดภาษาไทยเบื้องต้นก่อนส่งเข้าทุกโมดูล (เช่น "หมายถุึง" -> "หมายถึง", "กินได้ไหท" -> "กินได้ไหม", "คำนวน" -> "คำนวณ")
+  const text = normalizeThaiTypos(rawText);
+
   // 0. ตรวจสอบภาวะฉุกเฉินก่อนเป็นอันดับแรก (Phase 2)
   const emergencyReply = await handleEmergencyCheck(text, userId, userPetMemory);
   if (emergencyReply) {
@@ -171,6 +175,10 @@ async function handleFoodCheck(text, userId) {
       // หาก Local Matcher หาไม่เจอ แต่ AI จับคู่เข้ากับอาหารใน foods.json ได้ (เช่น "บราวนี่" -> "chocolate")
       if (!matchedFood && aiResult.matchedFoodId) {
         matchedFood = foods.find(f => f.id === aiResult.matchedFoodId) || null;
+      }
+      // หาก AI แก้คำพิมพ์ผิดใน extractedFoodName แล้วตรงกับอาหารในฐานข้อมูล
+      if (!matchedFood && aiResult.extractedFoodName) {
+        matchedFood = findFood(aiResult.extractedFoodName);
       }
     }
   }
